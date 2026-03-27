@@ -1,7 +1,7 @@
 """Database operations for user profiles and per-profile game statistics."""
 
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from lutris import settings
 from lutris.database import sql
@@ -10,24 +10,24 @@ DEFAULT_PROFILE_ID = "default"
 DEFAULT_PROFILE_NAME = "Default"
 
 
-def get_all_profiles() -> List[Dict]:
+def get_all_profiles() -> List[Dict[str, Any]]:
     """Return all profiles ordered by creation date."""
     with sql.db_cursor(settings.DB_PATH) as cursor:
         rows = cursor.execute(
-            "SELECT id, name, icon, created_at FROM profiles ORDER BY created_at ASC"
+            "SELECT id, name, icon, created_at, steam_id FROM profiles ORDER BY created_at ASC"
         ).fetchall()
-    return [{"id": r[0], "name": r[1], "icon": r[2], "created_at": r[3]} for r in rows]
+    return [{"id": r[0], "name": r[1], "icon": r[2], "created_at": r[3], "steam_id": r[4]} for r in rows]
 
 
-def get_profile(profile_id: str) -> Optional[Dict]:
+def get_profile(profile_id: str) -> Optional[Dict[str, Any]]:
     """Return a single profile by id, or None if not found."""
     with sql.db_cursor(settings.DB_PATH) as cursor:
         row = cursor.execute(
-            "SELECT id, name, icon, created_at FROM profiles WHERE id = ?", (profile_id,)
+            "SELECT id, name, icon, created_at, steam_id FROM profiles WHERE id = ?", (profile_id,)
         ).fetchone()
     if not row:
         return None
-    return {"id": row[0], "name": row[1], "icon": row[2], "created_at": row[3]}
+    return {"id": row[0], "name": row[1], "icon": row[2], "created_at": row[3], "steam_id": row[4]}
 
 
 def add_profile(name: str, profile_id: Optional[str] = None, icon: str = "") -> str:
@@ -67,6 +67,32 @@ def delete_profile(profile_id: str) -> None:
         cursor.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
 
 
+def get_profile_by_steam_id(steam_id: str) -> Optional[Dict[str, Any]]:
+    """Return the profile linked to *steam_id*, or None."""
+    with sql.db_cursor(settings.DB_PATH) as cursor:
+        row = cursor.execute(
+            "SELECT id, name, icon, created_at, steam_id FROM profiles WHERE steam_id = ?", (steam_id,)
+        ).fetchone()
+    if not row:
+        return None
+    return {"id": row[0], "name": row[1], "icon": row[2], "created_at": row[3], "steam_id": row[4]}
+
+
+def set_profile_steam_id(profile_id: str, steam_id: Optional[str]) -> None:
+    """Link or unlink a Steam account from a profile."""
+    with sql.db_cursor(settings.DB_PATH) as cursor:
+        cursor.execute("UPDATE profiles SET steam_id = ? WHERE id = ?", (steam_id, profile_id))
+
+
+def get_profile_by_name(name: str) -> Optional[Dict[str, Any]]:
+    """Return the first profile whose name matches *name* (case-insensitive), or None."""
+    name_lower = name.lower()
+    for profile in get_all_profiles():
+        if profile["name"].lower() == name_lower:
+            return profile
+    return None
+
+
 def ensure_default_profile() -> None:
     """Create the default profile if it doesn't exist yet."""
     if not get_profile(DEFAULT_PROFILE_ID):
@@ -76,7 +102,7 @@ def ensure_default_profile() -> None:
 # --- Per-profile game statistics ---
 
 
-def get_profile_game_stats(profile_id: str, game_id: int) -> Optional[Dict]:
+def get_profile_game_stats(profile_id: str, game_id: int) -> Optional[Dict[str, Any]]:
     """Return the playtime/lastplayed for a game under a specific profile."""
     with sql.db_cursor(settings.DB_PATH) as cursor:
         row = cursor.execute(
@@ -107,7 +133,7 @@ def update_profile_game_stats(profile_id: str, game_id: int, playtime: float, la
             )
 
 
-def get_all_profile_stats_for_game(game_id: int) -> List[Dict]:
+def get_all_profile_stats_for_game(game_id: int) -> List[Dict[str, Any]]:
     """Return all per-profile stats for a given game (useful for debugging/admin)."""
     with sql.db_cursor(settings.DB_PATH) as cursor:
         rows = cursor.execute(

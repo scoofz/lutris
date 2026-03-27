@@ -333,6 +333,7 @@ class Game:
         if not self._config:
             try:
                 from lutris.profile import get_profile_manager
+
                 profile_id = get_profile_manager().current_profile_id
             except Exception:
                 profile_id = None
@@ -558,6 +559,7 @@ class Game:
         """Override playtime/lastplayed with per-profile values if they exist."""
         try:
             from lutris.profile import get_profile_manager
+
             profile_id = get_profile_manager().current_profile_id
             stats = get_profile_game_stats(profile_id, int(self.id))
             if stats:
@@ -572,6 +574,7 @@ class Game:
         games_db.update_existing(id=self.id, slug=self.slug, lastplayed=self.lastplayed, playtime=self.playtime)
         try:
             from lutris.profile import get_profile_manager
+
             profile_id = get_profile_manager().current_profile_id
             update_profile_game_stats(profile_id, int(self.id), self.playtime, self.lastplayed)
         except Exception as ex:
@@ -854,6 +857,14 @@ class Game:
             self.prelaunch_pids = None
 
         GAME_START.fire(self)
+
+        # Clone Wine prefix for new profile if needed (before prelaunch so the
+        # background thread sees an already-initialised prefix).
+        clone_source = getattr(self.runner, "get_prefix_clone_source", lambda: None)()
+        if clone_source:
+            prefix_path = getattr(self.runner, "prefix_path", None)
+            if prefix_path:
+                launch_ui_delegate.clone_wine_prefix(clone_source, prefix_path, self.name)
 
         @watch_game_errors(game_stop_result=False, game=self)
         def configure_game(_ignored, error) -> None:
