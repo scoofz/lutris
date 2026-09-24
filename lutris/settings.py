@@ -5,7 +5,7 @@ import os
 import sys
 from gettext import gettext as _
 from tempfile import TemporaryDirectory
-from typing import Dict, cast
+from typing import cast
 
 from gi.repository import GLib
 
@@ -63,6 +63,9 @@ INSTALLER_REVISION_URL = SITE_URL + "/api/installers/game/%s/revisions/%s"
 GAME_URL = SITE_URL + "/games/%s/"
 RUNTIME_URL = SITE_URL + "/api/runtimes"
 
+GITHUB_URL = "https://github.com/lutris/lutris"
+BUG_TRACKER_URL = GITHUB_URL + "/issues"
+
 STEAM_API_KEY = sio.read_setting("steam_api_key") or "34C9698CEB394AB4401D65927C6B3752"
 STEAM_FAMILY_INCLUDE_OWN = sio.read_setting("steam_family_include_own", default="False")
 
@@ -80,7 +83,7 @@ write_setting = sio.write_setting
 SETTINGS_CHANGED = sio.SETTINGS_CHANGED
 
 
-def get_lutris_directory_settings(directory: str) -> Dict[str, str]:
+def get_lutris_directory_settings(directory: str) -> dict[str, str]:
     """Reads the 'lutris.json' file in 'directory' and returns it as
     a (new) dictionary. The file is missing, unreadable, unparseable, or not a dict,
     this returns an empty dict instead."""
@@ -92,13 +95,13 @@ def get_lutris_directory_settings(directory: str) -> Dict[str, str]:
                     json_data = json.load(f)
                     if not isinstance(json_data, dict):
                         logger.error("'%s' does not contain a dict, and will be ignored.", path)
-                    return cast(Dict[str, str], json_data)
+                    return cast(dict[str, str], json_data)
         except Exception as ex:
             logger.exception("Failed to read '%s': %s", path, ex)
     return {}
 
 
-def set_lutris_directory_settings(directory: str, settings: Dict[str, str], merge: bool = True) -> bool:
+def set_lutris_directory_settings(directory: str, settings: dict[str, str], merge: bool = True) -> bool:
     """Updates the 'lutris.json' file in the 'directory' given. If it does not exist, this method creates it. By
     default, if it does exist this merges the values of settings into it, but in a shallow way - only the top level
     entries are merged, not the content any of any sub-dictionaries. If 'merge' is False, this replaces the existing

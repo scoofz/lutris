@@ -91,12 +91,12 @@ class ProfileManager:
     # Directory helpers
     # ------------------------------------------------------------------
 
-    def get_profile_dir(self, profile_id: Optional[str] = None) -> str:
+    def get_profile_dir(self, profile_id: str | None = None) -> str:
         """Root directory for a profile's per-user data."""
         pid = profile_id or self._profile_id
         return os.path.join(settings.PROFILES_DIR, pid)
 
-    def get_wine_prefix_path(self, game_slug: str, profile_id: Optional[str] = None) -> str:
+    def get_wine_prefix_path(self, game_slug: str, profile_id: str | None = None) -> str:
         """Return the Wine prefix directory for *game_slug* under this profile.
 
         The directory is not created here; WinePrefixManager will do that on
@@ -104,17 +104,17 @@ class ProfileManager:
         """
         return os.path.join(self.get_profile_dir(profile_id), "wine-prefixes", game_slug)
 
-    def get_saves_path(self, game_slug: str, profile_id: Optional[str] = None) -> str:
+    def get_saves_path(self, game_slug: str, profile_id: str | None = None) -> str:
         """Return the saves directory for *game_slug* under this profile."""
         path = os.path.join(self.get_profile_dir(profile_id), "saves", game_slug)
         os.makedirs(path, exist_ok=True)
         return path
 
-    def get_profile_games_config_dir(self, profile_id: Optional[str] = None) -> str:
+    def get_profile_games_config_dir(self, profile_id: str | None = None) -> str:
         """Directory that stores per-profile game config overrides."""
         return os.path.join(self.get_profile_dir(profile_id), "games")
 
-    def get_profile_game_config_path(self, configpath: str, profile_id: Optional[str] = None) -> str:
+    def get_profile_game_config_path(self, configpath: str, profile_id: str | None = None) -> str:
         """Return the path to a profile-level config override YAML for a game."""
         return os.path.join(self.get_profile_games_config_dir(profile_id), f"{configpath}.yml")
 

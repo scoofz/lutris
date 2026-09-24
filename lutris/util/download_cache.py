@@ -16,7 +16,6 @@ import json
 import os
 import time
 from enum import Enum
-from typing import Optional
 
 from lutris.util.log import logger
 
@@ -80,7 +79,7 @@ def update_cache_lock(file_path: str, state: CacheState) -> None:
         logger.warning("Failed to update cache lock for %s: %s", file_path, ex)
 
 
-def get_cache_state(file_path: str) -> Optional[CacheState]:
+def get_cache_state(file_path: str) -> CacheState | None:
     """Read the current state from a cache lock file.
 
     Args:
@@ -146,7 +145,7 @@ def is_safe_to_delete(file_path: str) -> bool:
         return True
 
     # Active states - never delete
-    if state in (CacheState.DOWNLOADING, CacheState.DOWNLOADING, CacheState.INSTALLING):
+    if state in (CacheState.DOWNLOADING, CacheState.DOWNLOADED, CacheState.INSTALLING):
         logger.info(
             "Cache protection: preserving %s (state: %s)",
             os.path.basename(file_path),

@@ -6,7 +6,6 @@ import tarfile
 import uuid
 import zipfile
 import zlib
-from typing import List, Tuple
 
 from lutris import settings
 from lutris.exceptions import MissingExecutableError
@@ -18,7 +17,7 @@ class ExtractError(Exception):
     """Exception raised when and archive fails to extract"""
 
 
-def extract_archive(path: str, to_directory: str = ".", merge_single: bool = True, extractor=None) -> Tuple[str, str]:
+def extract_archive(path: str, to_directory: str = ".", merge_single: bool = True, extractor=None) -> tuple[str, str]:
     """Extract an archive to a destination directory.
 
     Args:
@@ -170,7 +169,7 @@ def _random_id():
     return str(uuid.uuid4())[:8]
 
 
-def _do_extract(archive: str, dest: str, opener, mode: str = None, extractor=None) -> None:
+def _do_extract(archive: str, dest: str, opener, mode: str | None = None, extractor=None) -> None:
     if opener == "gz":
         _decompress_gz(archive, dest)
     elif opener == "7zip":
@@ -203,14 +202,25 @@ def _decompress_gz(file_path: str, dest_path: str):
         gzipped_file.close()
 
 
-def _extract_7zip(path: str, dest: str, archive_type: str = None) -> None:
-    _7zip_path = os.path.join(settings.RUNTIME_DIR, "p7zip/7z")
-    if not system.path_exists(_7zip_path):
-        _7zip_path = system.find_required_executable("7z")
+def _extract_7zip(path: str, dest: str, archive_type: str | None = None) -> None:
+    _7zip_path = _get_7zip_path()
     command = [_7zip_path, "x", path, "-o{}".format(dest), "-aoa"]
     if archive_type and archive_type != "auto":
         command.append("-t{}".format(archive_type))
     subprocess.call(command)
+
+
+def _get_7zip_path() -> str:
+    """Return the path where 7zip is installed"""
+    for bin_name in ["7z", "7za"]:
+        _7zip_path = os.path.join(settings.RUNTIME_DIR, f"p7zip/{bin_name}")
+        if system.path_exists(_7zip_path):
+            return _7zip_path
+    logger.warning("7z/7za not available in the runtime folder, using system version")
+    try:
+        return system.find_required_executable("7z")
+    except MissingExecutableError:
+        return system.find_required_executable("7za")
 
 
 def _extract_exe(path: str, dest: str) -> None:
@@ -218,9 +228,7 @@ def _extract_exe(path: str, dest: str) -> None:
         _decompress_gog(path, dest)
     else:
         # use 7za to check if exe is an archive
-        _7zip_path = os.path.join(settings.RUNTIME_DIR, "p7zip/7za")
-        if not system.path_exists(_7zip_path):
-            _7zip_path = system.find_required_executable("7za")
+        _7zip_path = _get_7zip_path()
         command = [_7zip_path, "t", path]
         return_code = subprocess.call(command)
         if return_code == 0:
@@ -303,7 +311,7 @@ def _extract_AppImage(path: str, dest: str) -> None:
     shutil.copy(path, dest)
 
 
-def get_innoextract_list(file_path: str) -> List[str]:
+def get_innoextract_list(file_path: str) -> list[str]:
     """Return the list of files contained in a GOG archive"""
     output = system.read_process_output([_get_innoextract_path(), "-lmq", file_path])
     return [line[3:] for line in output.split("\n") if line]

@@ -2,14 +2,13 @@
 
 import os
 from gettext import gettext as _
-from typing import Optional
 from urllib.parse import urlparse
 
 from lutris.cache import get_url_cache_path, has_valid_custom_cache_path, save_to_cache
 from lutris.gui.widgets.download_progress_box import DownloadProgressBox
 from lutris.installer.errors import ScriptingError
 from lutris.util import system
-from lutris.util.downloader import Downloader
+from lutris.util.downloader import BaseDownloader
 from lutris.util.log import logger
 from lutris.util.strings import gtk_safe_urls
 
@@ -87,7 +86,7 @@ class InstallerFile:
             return self._file_meta.get("referer")
 
     @property
-    def downloader(self) -> Optional[Downloader]:
+    def downloader(self) -> BaseDownloader | None:
         """Return custom downloader instance, if one was provided."""
         if callable(self._downloader):
             self._downloader = self._downloader(self)
@@ -100,7 +99,7 @@ class InstallerFile:
 
         Services can specify a 'downloader_class' in _file_meta to use
         a specialized downloader (e.g., GOGDownloader for parallel downloads)
-        instead of the default Downloader.
+        instead of the default SimpleDownloader.
         """
         if isinstance(self._file_meta, dict):
             return self._file_meta.get("downloader_class")
@@ -277,7 +276,7 @@ class InstallerFile:
             )
 
     @property
-    def size(self) -> Optional[int]:
+    def size(self) -> int | None:
         if isinstance(self._file_meta, dict) and "size" in self._file_meta:
             try:
                 size = int(self._file_meta["size"])
@@ -288,7 +287,7 @@ class InstallerFile:
         return None
 
     @property
-    def total_size(self) -> Optional[int]:
+    def total_size(self) -> int | None:
         if isinstance(self._file_meta, dict) and "total_size" in self._file_meta:
             try:
                 total_size = int(self._file_meta["total_size"])

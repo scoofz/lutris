@@ -7,8 +7,9 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Collection, Generator
 from ssl import CertificateError
-from typing import TYPE_CHECKING, Any, Collection, Dict, Generator, Optional
+from typing import TYPE_CHECKING, Any
 
 import certifi
 
@@ -34,7 +35,7 @@ ssl._create_default_https_context = _create_ssl_context
 class HTTPError(Exception):
     """Exception raised on request failures"""
 
-    def __init__(self, message: str, code: int = None):
+    def __init__(self, message: str, code: int | None = None):
         super().__init__(message)
         self.code = code
 
@@ -48,13 +49,13 @@ class Request:
         self,
         url: str,
         timeout: int = DEFAULT_TIMEOUT,
-        stop_request: "threading.Event" = None,
-        headers: Dict[str, str] = None,
-        cookies: "CookieJar" = None,
-        redacted_query_parameters: Collection[str] = None,
+        stop_request: "threading.Event | None" = None,
+        headers: dict[str, str] | None = None,
+        cookies: "CookieJar | None" = None,
+        redacted_query_parameters: Collection[str] | None = None,
     ):
         self.url = self._clean_url(url)
-        self.status_code: Optional[int] = None
+        self.status_code: int | None = None
         self.content = b""
         self.timeout = timeout
         self.stop_request = stop_request
@@ -120,7 +121,7 @@ class Request:
 
         return self.url
 
-    def _request(self, method: str, data: bytes = None) -> "Request":
+    def _request(self, method: str, data: bytes | None = None) -> "Request":
         logger.debug("%s %s", method, self.redacted_url)
         try:
             req = urllib.request.Request(url=self.url, data=data, headers=self.headers, method=method)
@@ -169,13 +170,13 @@ class Request:
                 return b""
             yield chunk
 
-    def get(self, data: bytes = None) -> "Request":
+    def get(self, data: bytes | None = None) -> "Request":
         return self._request("GET", data)
 
-    def post(self, data: bytes = None) -> "Request":
+    def post(self, data: bytes | None = None) -> "Request":
         return self._request("POST", data)
 
-    def delete(self, data: bytes = None) -> "Request":
+    def delete(self, data: bytes | None = None) -> "Request":
         return self._request("DELETE", data)
 
     def write_to_file(self, path: str) -> None:
@@ -207,7 +208,7 @@ class Request:
         return ""
 
 
-def download_file(url: str, dest: str, overwrite: bool = False, raise_errors: bool = False) -> Optional[str]:
+def download_file(url: str, dest: str, overwrite: bool = False, raise_errors: bool = False) -> str | None:
     """Save a remote resource locally"""
     if system.path_exists(dest):
         if overwrite:

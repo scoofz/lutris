@@ -3,7 +3,6 @@
 import os
 import shutil
 from gettext import gettext as _
-from typing import Optional
 
 from gi.repository import Gtk
 
@@ -31,7 +30,7 @@ def _get_profile_disk_usage(profile_dir: str) -> int:
 class ProfileDialog(Dialog):
     """Modal dialog that lets the user create, rename, switch and delete profiles."""
 
-    def __init__(self, parent: Optional[Gtk.Widget] = None):
+    def __init__(self, parent: Gtk.Widget | None = None):
         super().__init__(
             title=_("Manage Profiles"),
             parent=parent,
@@ -127,7 +126,7 @@ class ProfileDialog(Dialog):
             usage = strings.human_size(_get_profile_disk_usage(profile_dir))
             self.store.append([pid, display_name, usage])
 
-    def _get_selected_id(self) -> Optional[str]:
+    def _get_selected_id(self) -> str | None:
         selection = self.tree.get_selection()
         model, tree_iter = selection.get_selected()
         if tree_iter is None:

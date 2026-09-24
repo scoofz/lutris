@@ -1,8 +1,10 @@
+import functools
 import glob
 import os
 import re
 import subprocess
-from typing import Dict, List, Optional, TypeAlias
+import threading
+from typing import TypeAlias
 
 from lutris.util import system
 from lutris.util.graphics import drivers
@@ -20,12 +22,39 @@ VULKAN_DATA_DIRS = [
     "/opt/amdgpu-pro/etc",  # AMD GPU Pro - TkG
 ]
 
-GPUS = {}
+_gpus: dict[str, "GPU"] | None = None
+_gpus_lock = threading.Lock()
 
-GpuInfoDict: TypeAlias = Dict[str, str]
+
+def get_gpus() -> dict[str, "GPU"]:
+    """Return a dict of GPU objects, keyed by card name. Populated on first call."""
+    global _gpus
+    with _gpus_lock:
+        if _gpus is None:
+            gpus = {}
+            for card in drivers.get_gpu_cards():
+                gpu = GPU(card)
+                driver_info = gpu.get_driver_info()
+                logger.info('"%s" is %s Driver %s', card, gpu, driver_info.get("version"))
+                gpus[card] = gpu
+            _gpus = gpus
+    return _gpus
 
 
-def get_gpus_info() -> Dict[str, drivers.DriverGpuInfoDict]:
+def preload_gpus(async_ops: bool = True) -> None:
+    """Kick off GPU detection in a background thread so it's
+    likely ready by the time the user opens system configuration.
+    When async_ops is False, runs synchronously on the calling thread."""
+    if async_ops:
+        threading.Thread(target=get_gpus, daemon=True).start()
+    else:
+        get_gpus()
+
+
+GpuInfoDict: TypeAlias = dict[str, str]
+
+
+def get_gpus_info() -> dict[str, drivers.DriverGpuInfoDict]:
     """Return the information related to each GPU on the system"""
     return {card: drivers.get_gpu_info(card) for card in drivers.get_gpu_cards()}
 
@@ -39,7 +68,7 @@ def display_gpu_info(gpu_id: str, gpu_info: drivers.DriverGpuInfoDict) -> None:
         logger.error("Unable to get GPU information from '%s'", gpu_id)
 
 
-def add_icd_search_path(paths: str) -> List[str]:
+def add_icd_search_path(paths: str) -> list[str]:
     icd_paths = []
     if paths:
         # unixy env vars with multiple paths are : delimited
@@ -50,7 +79,19 @@ def add_icd_search_path(paths: str) -> List[str]:
     return icd_paths
 
 
-def get_vk_icd_files() -> List[str]:
+def log_vulkan_loader_messages(messages: str) -> None:
+    """Selectively log the messages the Vulkan loader writes to stderr while we run
+    vulkaninfo. Genuine errors are surfaced; the loader's warnings about ICDs that
+    can't initialize on this host (such as Mesa's dzn/Direct3D12 driver, which has
+    no D3D12 backend outside of WSL) are dropped entirely, as they're noise on
+    most systems and would otherwise clutter the output even in debug mode."""
+    for line in messages.splitlines():
+        line = line.strip()
+        if "ERROR" in line:
+            logger.error("vulkaninfo: %s", line)
+
+
+def get_vk_icd_files() -> list[str]:
     """Returns available vulkan ICD files in the same search order as vulkan-loader,
     but in a single list"""
     icd_search_paths = []
@@ -67,6 +108,29 @@ def get_vk_icd_files() -> List[str]:
     return all_icd_files
 
 
+@functools.cache
+def read_vulkaninfo_summary(icd_files: str = "") -> str | None:
+    """Return the output of 'vulkaninfo --summary', restricted to 'icd_files' if given, or None
+    if it failed. vulkaninfo can take seconds to run on some drivers, so it runs once per set of
+    ICD files, not once per GPU."""
+    if not VULKANINFO_PATH:
+        return None
+    env = dict(os.environ)
+    if icd_files:
+        env["VK_DRIVER_FILES"] = icd_files  # Currently supported
+        env["VK_ICD_FILENAMES"] = icd_files  # Deprecated
+    try:
+        return system.read_process_output(
+            [VULKANINFO_PATH, "--summary"],
+            env=env,
+            error_result=None,
+            stderr_handler=log_vulkan_loader_messages,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        # read_process_output() already logged this; callers fall back to lspci.
+        return None
+
+
 class GPU:
     def __init__(self, card: str):
         self.card = card
@@ -76,13 +140,11 @@ class GPU:
         self.pci_subsys_id = self.gpu_info["PCI_SUBSYS_ID"].lower()
         self.pci_slot = self.gpu_info["PCI_SLOT_NAME"]
         self.icd_files = self.get_icd_files()
+        self.device_uuid: str | None = None
         if VULKANINFO_PATH:
-            try:
-                self.device_uuid = self.get_vulkaninfo_device_uuid()
-                self.name = self.get_vulkaninfo_name() or self.get_lspci_name()
-            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                # already logged this, so we'll just fall back to lspci.
-                self.name = self.get_lspci_name()
+            vulkaninfo = self.get_vulkaninfo()
+            self.device_uuid = self.get_vulkaninfo_device_uuid(vulkaninfo)
+            self.name = self.get_vulkaninfo_name(vulkaninfo) or self.get_lspci_name()
         else:
             self.name = self.get_lspci_name()
 
@@ -119,20 +181,11 @@ class GPU:
             infos[key] = value.strip()
         return infos
 
-    def get_vulkaninfo(self) -> Dict[str, Dict[str, str]]:
-        """Runs vulkaninfo to find the GPU name"""
-        if not VULKANINFO_PATH:
-            raise RuntimeError("vulkaninfo is not available")
-        subprocess_env = dict(os.environ)
-        vulkaninfo_output_raw = system.read_process_output(
-            [VULKANINFO_PATH, "--summary"], env=os.environ, error_result=None
-        )
-        if not vulkaninfo_output_raw:
-            subprocess_env["VK_DRIVER_FILES"] = self.icd_files  # Currently supporte
-            subprocess_env["VK_ICD_FILENAMES"] = self.icd_files  # Deprecated
-            vulkaninfo_output_raw = system.read_process_output(
-                [VULKANINFO_PATH, "--summary"], env=subprocess_env, error_result=""
-            )
+    def get_vulkaninfo(self) -> dict[str, dict[str, str]]:
+        """Runs vulkaninfo to find the GPU name; returns an empty dict if vulkaninfo fails."""
+        vulkaninfo_output_raw = read_vulkaninfo_summary()
+        if vulkaninfo_output_raw == "" and self.icd_files:
+            vulkaninfo_output_raw = read_vulkaninfo_summary(self.icd_files)
 
         vulkaninfo_output = vulkaninfo_output_raw.split("\n") if vulkaninfo_output_raw else []
         result = {}
@@ -157,8 +210,7 @@ class GPU:
             return {}
         return result
 
-    def get_vulkaninfo_name(self) -> Optional[str]:
-        vulkaninfo = self.get_vulkaninfo()
+    def get_vulkaninfo_name(self, vulkaninfo: dict[str, dict[str, str]]) -> str | None:
         best_name = None
         for gpu_index in vulkaninfo:
             pci_id = "%s:%s" % (
@@ -171,8 +223,7 @@ class GPU:
                     best_name = name
         return best_name
 
-    def get_vulkaninfo_device_uuid(self) -> Optional[str]:
-        vulkaninfo = self.get_vulkaninfo()
+    def get_vulkaninfo_device_uuid(self, vulkaninfo: dict[str, dict[str, str]]) -> str | None:
         for gpu_index in vulkaninfo:
             pci_id = "%s:%s" % (
                 vulkaninfo[gpu_index]["vendorID"].replace("0x", ""),

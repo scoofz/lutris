@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import signal
+from collections.abc import Callable, Iterable
 from gettext import gettext as _
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from lutris import runtime, settings
 from lutris.api import format_runner_version, get_default_runner_version_info
@@ -16,7 +17,7 @@ from lutris.monitored_command import MonitoredCommand
 from lutris.runners import RunnerInstallationError
 from lutris.util import flatpak, strings, system
 from lutris.util.extract import ExtractError, extract_archive
-from lutris.util.graphics.gpu import GPUS
+from lutris.util.graphics.gpu import get_gpus
 from lutris.util.linux import LINUX_SYSTEM
 from lutris.util.log import logger
 from lutris.util.process import Process
@@ -26,14 +27,14 @@ if TYPE_CHECKING:
     from lutris.api import RunnerVersionDict
     from lutris.config import GameConfigDict, LaunchConfigDict, RunnerConfigDict, SystemConfigDict
     from lutris.game import Game
-    from lutris.gui.dialogs.delegate import InstallUIDelegate
+    from lutris.gui.dialogs.delegates import InstallUIDelegate
     from lutris.installer.installer import LutrisInstaller
     from lutris.installer.interpreter import ScriptInterpreter
 
 
-GamePlayInfoDict: TypeAlias = Dict[str, Any]
-RunnerOptionDict: TypeAlias = Dict[str, Any]
-RunDataDict: TypeAlias = Dict[str, Any]
+GamePlayInfoDict: TypeAlias = dict[str, Any]
+RunnerOptionDict: TypeAlias = dict[str, Any]
+RunDataDict: TypeAlias = dict[str, Any]
 
 
 def kill_processes(sig: int, pids: Iterable[int]) -> None:
@@ -51,7 +52,7 @@ class Runner:  # pylint: disable=too-many-public-methods
     """Generic runner (base class for other runners)."""
 
     multiple_versions = False
-    platforms: List[str] = []
+    platform_dict: dict[str, str] = {}
     runnable_alone = False
     game_options = []
     runner_options = []
@@ -63,10 +64,11 @@ class Runner:  # pylint: disable=too-many-public-methods
     download_url = None
     arch = None  # If the runner is only available for an architecture that isn't x86_64
     flatpak_id = None
+    runner_name: str = ""
     human_name = ""
     use_sniper_runtime = False
 
-    def __init__(self, config: Optional[LutrisConfig] = None):
+    def __init__(self, config: LutrisConfig | None = None):
         """Initialize runner."""
         if config:
             self.has_explicit_config = True
@@ -82,7 +84,13 @@ class Runner:  # pylint: disable=too-many-public-methods
 
     @property
     def name(self) -> str:
-        return self.__class__.__name__
+        return self.runner_name or self.__class__.__name__
+
+    @property
+    def runner_executable_path(self) -> str:
+        if not self.runner_executable:
+            return ""
+        return os.path.join(self.runner_name, self.runner_executable) if self.runner_name else self.runner_executable
 
     @property
     def directory(self) -> str:
@@ -115,7 +123,7 @@ class Runner:  # pylint: disable=too-many-public-methods
         return self.config.system_config
 
     @property
-    def default_path(self) -> Optional[str]:
+    def default_path(self) -> str | None:
         """Return the default path where games are installed."""
         return cast(str, self.system_config.get("game_path"))
 
@@ -166,15 +174,45 @@ class Runner:  # pylint: disable=too-many-public-methods
         return self.shader_cache_dir
 
     @property
-    def discord_client_id(self) -> Optional[str]:
+    def discord_client_id(self) -> str | None:
         if self.game_data.get("discord_client_id"):
             return cast(str, self.game_data.get("discord_client_id"))
         return None
 
-    def get_platform(self) -> str:
-        return self.platforms[0]
+    @staticmethod
+    def to_platform_dict(platform_list: list[str]) -> dict[str, str]:
+        """
+        Convert a platform list to a dictionary
+        """
+        return {platform: platform for platform in platform_list}
 
-    def get_runner_options(self) -> List[RunnerOptionDict]:
+    @property
+    def platforms(self) -> list[str]:
+        """
+        Retrieve the Lutris platform names as list using the keys
+        """
+        return list(self.platform_dict.keys())
+
+    @platforms.setter
+    def platforms(self, platform_list: list[str]) -> None:
+        """
+        Setter for platform dictionary, set the platform from a list
+        """
+        self.platform_dict = {platform: platform for platform in platform_list}
+
+    def get_platform(self) -> str:
+        """
+        Retrieve the Lutris Platform name from the keys of the platform dictionary
+        """
+        if not self.platform_dict:
+            return ""
+        selected_runner_platform = self.game_config.get("platform")
+        for lutris_platform, runner_platform in self.platform_dict.items():
+            if selected_runner_platform == runner_platform:
+                return lutris_platform
+        return next(iter(self.platform_dict.keys()))
+
+    def get_runner_options(self) -> list[RunnerOptionDict]:
         runner_options = self.runner_options[:]
         if self.runner_executable:
             runner_options.append(
@@ -200,7 +238,7 @@ class Runner:  # pylint: disable=too-many-public-methods
         )
         return runner_options
 
-    def play(self) -> Dict[str, Any]:
+    def play(self) -> dict[str, Any]:
         """Return the information needed to launch the game: at minimum a 'command' key
         with the command list. Subclasses must override this."""
         raise NotImplementedError(f"Runner: {self} doesn't have a play method.")
@@ -210,15 +248,15 @@ class Runner:  # pylint: disable=too-many-public-methods
             runner_executable: str = self.runner_config["runner_executable"]
             if os.path.isfile(runner_executable):
                 return runner_executable
-        if not self.runner_executable:
+        if not self.runner_executable_path:
             raise MisconfigurationError("runner_executable not set for {}".format(self.name))
 
-        exe = os.path.join(settings.RUNNER_DIR, self.runner_executable)
+        exe = os.path.join(settings.RUNNER_DIR, self.runner_executable_path)
         if not os.path.isfile(exe):
             raise MissingExecutableError(_("The executable '%s' could not be found.") % exe)
         return exe
 
-    def get_command(self) -> List[str]:
+    def get_command(self) -> list[str]:
         """Returns the command line to run the runner itself; generally a game
         will be appended to this by play()."""
         try:
@@ -251,7 +289,7 @@ class Runner:  # pylint: disable=too-many-public-methods
 
         return command
 
-    def get_env(self, os_env: bool = False, disable_runtime: bool = False) -> Dict[str, str]:
+    def get_env(self, os_env: bool = False, disable_runtime: bool = False) -> dict[str, str]:
         """Return environment variables used for a game."""
         env = {}
         if os_env:
@@ -286,8 +324,9 @@ class Runner:  # pylint: disable=too-many-public-methods
         if sdl_video_fullscreen and sdl_video_fullscreen != "off":
             env["SDL_VIDEO_FULLSCREEN_DISPLAY"] = sdl_video_fullscreen
 
-        if len(GPUS) > 1 and self.system_config.get("gpu") in GPUS:
-            gpu = GPUS[self.system_config["gpu"]]
+        gpus = get_gpus()
+        if len(gpus) > 1 and self.system_config.get("gpu") in gpus:
+            gpu = gpus[self.system_config["gpu"]]
             if gpu.driver == "nvidia":
                 env["DRI_PRIME"] = "1"
                 env["__NV_PRIME_RENDER_OFFLOAD"] = "1"
@@ -321,12 +360,15 @@ class Runner:  # pylint: disable=too-many-public-methods
 
         return env
 
-    def finish_env(self, env: Dict[str, str], game: Game) -> None:
+    def finish_env(self, env: dict[str, str], game: Game | None = None) -> None:
         """This is called by the Game after setting up the environment to allow the runner
-        to make final adjustments, which may be based on the environment so far."""
+        to make final adjustments, which may be based on the environment so far.
+
+        'game' is None when the runner is launched standalone (get_run_data), in which
+        case there is no game context to derive settings from."""
         return None
 
-    def get_runtime_env(self) -> Dict[str, str]:
+    def get_runtime_env(self) -> dict[str, str]:
         """Return runtime environment variables.
 
         This method may be overridden in runner classes.
@@ -348,7 +390,7 @@ class Runner:  # pylint: disable=too-many-public-methods
         if config_working_dir:
             gameplay_info["working_dir"] = config_working_dir
 
-    def get_launch_config_command(self, gameplay_info: GamePlayInfoDict, launch_config: LaunchConfigDict) -> List[str]:
+    def get_launch_config_command(self, gameplay_info: GamePlayInfoDict, launch_config: LaunchConfigDict) -> list[str]:
         """Generates a new command for the gameplay_info, to implement the launch_config.
         Returns a new list of strings; the caller can modify it further.
 
@@ -393,7 +435,7 @@ class Runner:  # pylint: disable=too-many-public-methods
 
         return exe
 
-    def get_launch_config_working_dir(self, launch_config: LaunchConfigDict) -> Optional[str]:
+    def get_launch_config_working_dir(self, launch_config: LaunchConfigDict) -> str | None:
         """Extracts the "working_dir" from the config, and resolves this relative
         to the game's working directory, so that an absolute path results.
 
@@ -407,7 +449,7 @@ class Runner:  # pylint: disable=too-many-public-methods
 
         return None
 
-    def resolve_config_path(self, path: str, relative_to: str = None) -> str:
+    def resolve_config_path(self, path: str, relative_to: str | None = None) -> str:
         """Interpret a path taken from the launch_config relative to
         a working directory, using the game's working_dir if that is omitted,
         and expanding the '~' if we get one.
@@ -426,6 +468,13 @@ class Runner:  # pylint: disable=too-many-public-methods
 
         return path
 
+    def attach_log_handlers(self, monitored_command: MonitoredCommand, game: "Game") -> None:
+        """Hook for runners to install extra log handlers on the game's
+        MonitoredCommand just before it starts. The default implementation
+        does nothing; subclasses may append callables to
+        monitored_command.log_handlers (e.g. to parse runner-specific output
+        and update game.launch_status)."""
+
     def prelaunch(self) -> None:
         """Run actions before running the game, override this method in runners; raise an
         exception if prelaunch fails, and it will be reported to the user, and
@@ -442,7 +491,7 @@ class Runner:  # pylint: disable=too-many-public-methods
         if unavailable_libs:
             raise UnavailableLibrariesError(unavailable_libs, self.arch)
 
-    def get_version(self, use_default: bool = True) -> Optional[str]:
+    def get_version(self, use_default: bool = True) -> str | None:
         return None
 
     def get_run_data(self) -> RunDataDict:
@@ -461,7 +510,7 @@ class Runner:  # pylint: disable=too-many-public-methods
                 return
 
         command_data = self.get_run_data()
-        command = command_data.get("command")
+        command: list[str] = command_data.get("command")
         env = (command_data.get("env") or {}).copy()
 
         self.prelaunch()
@@ -493,7 +542,7 @@ class Runner:  # pylint: disable=too-many-public-methods
             return False
         return True
 
-    def filter_game_pids(self, candidate_pids: Iterable[int], game_uuid: str, game_folder: str) -> Set[int]:
+    def filter_game_pids(self, candidate_pids: Iterable[int], game_uuid: str, game_folder: str) -> set[int]:
         """Checks the pids given and returns a set containing only those that are part of the running game,
         identified by its UUID and directory."""
         folder_pids = set()
@@ -546,15 +595,15 @@ class Runner:  # pylint: disable=too-many-public-methods
         script settings, to determine more precisely what must be installed."""
         return self.is_installed()
 
-    def get_installer_runner_version(self, installer: LutrisInstaller, use_runner_config: bool = True) -> Optional[str]:
+    def get_installer_runner_version(self, installer: LutrisInstaller, use_runner_config: bool = True) -> str | None:
         return None
 
-    def adjust_installer_runner_config(self, installer_runner_config: Dict[str, Any]) -> None:
+    def adjust_installer_runner_config(self, installer_runner_config: dict[str, Any]) -> None:
         """This is called during installation to let to run fix up in the runner's section of
         the confliguration before it is saved. This method should modify the dict given."""
         return None
 
-    def get_runner_version(self, version: Optional[str] = None) -> Optional[RunnerVersionDict]:
+    def get_runner_version(self, version: str | None = None) -> RunnerVersionDict | None:
         """Get the appropriate version for a runner, as with get_default_runner_version(),
         but this method allows the runner to apply its configuration."""
         return get_default_runner_version_info(self.name, version)
@@ -562,8 +611,8 @@ class Runner:  # pylint: disable=too-many-public-methods
     def install(
         self,
         install_ui_delegate: InstallUIDelegate,
-        version: Optional[str] = None,
-        callback: Optional[Callable[[], None]] = None,
+        version: str | None = None,
+        callback: Callable[[], None] | None = None,
     ) -> None:
         """Install runner using package management systems."""
         logger.debug(
@@ -603,7 +652,8 @@ class Runner:  # pylint: disable=too-many-public-methods
         url: str = runner_version_info["url"]
         self.download_and_extract(url, **opts)
 
-    def download_and_extract(self, url: str, dest: Optional[str] = None, **opts: Any) -> None:
+    def download_and_extract(self, url: str, **opts: Any) -> None:
+        dest = opts.get("dest")
         install_ui_delegate = opts["install_ui_delegate"]
         merge_single = opts.get("merge_single", False)
         callback = opts.get("callback")
@@ -619,7 +669,7 @@ class Runner:  # pylint: disable=too-many-public-methods
             logger.info("Download canceled by the user.")
 
     def extract(
-        self, archive: str, dest: str, merge_single: bool = False, callback: Optional[Callable[[], None]] = None
+        self, archive: str, dest: str, merge_single: bool = False, callback: Callable[[], None] | None = None
     ) -> None:
         if not system.path_exists(archive, exclude_empty=True):
             raise RunnerInstallationError(_("Failed to extract {}").format(archive))
@@ -636,26 +686,26 @@ class Runner:  # pylint: disable=too-many-public-methods
 
             clear_wine_version_cache()
 
-        if self.runner_executable:
-            runner_executable = os.path.join(settings.RUNNER_DIR, self.runner_executable)
+        if self.runner_executable_path:
+            runner_executable = os.path.join(settings.RUNNER_DIR, self.runner_executable_path)
             if os.path.isfile(runner_executable):
                 system.make_executable(runner_executable)
 
         if callback:
             callback()
 
-    def remove_game_data(self, app_id: Optional[str] = None, game_path: Optional[str] = None) -> None:
+    def remove_game_data(self, app_id: str | None = None, game_path: str | None = None) -> None:
         if game_path:
             system.remove_folder(game_path)
 
     def can_uninstall(self) -> bool:
         return os.path.isdir(self.directory)
 
-    def uninstall(self, uninstall_callback: Callable[[], None]) -> None:
+    def uninstall(self, uninstall_callback: Callable[[], None] | None = None) -> None:
         runner_path = self.directory
         if os.path.isdir(runner_path):
             system.remove_folder(runner_path, completion_function=uninstall_callback)
-        else:
+        elif uninstall_callback:
             uninstall_callback()
 
     def find_option(self, options_group: str, option_name: str) -> Any:
@@ -674,7 +724,20 @@ class Runner:  # pylint: disable=too-many-public-methods
         the caller will SIGKILL them (after a delay)."""
         kill_processes(signal.SIGTERM, game_pids)
 
-    def extract_icon(self, game_slug: str) -> Optional[bool]:
+    def keep_game_alive(self, game_pids: Iterable[int], game_thread_running: bool) -> bool:
+        """Whether beat() should keep monitoring even though Lutris's own launch
+        process (game_thread) may have exited.
+
+        Most runners keep the game under game_thread, so this returns False and
+        beat() uses its normal logic. Runners that launch the game out-of-process
+        (e.g. Steam, which hands off to a Steam-managed process tree via a
+        non-blocking URI) override this to (a) bridge the brief window between
+        the launcher exiting and the game's process tree appearing, and (b) keep
+        monitoring for the whole game lifetime.
+        """
+        return False
+
+    def extract_icon(self, game_slug: str) -> bool | None:
         """The config UI calls this to extract the game icon. Most runners do not
         support this and do nothing. This is not called if a custom icon is installed
         for the game."""

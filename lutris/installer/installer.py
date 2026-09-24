@@ -5,6 +5,9 @@ from functools import cached_property
 from gettext import gettext as _
 from pathlib import Path
 
+import requests
+
+from lutris.api import get_game_details
 from lutris.config import LutrisConfig, write_game_config
 from lutris.database.games import add_or_update, get_game_by_field
 from lutris.exceptions import AuthenticationError, UnavailableGameError
@@ -97,6 +100,17 @@ class LutrisInstaller:  # pylint: disable=too-many-instance-attributes
             return service_id
         return
 
+    def _get_discord_id_from_api(self):
+        """Fetch the discord_id from the Lutris API if available."""
+        if not self.game_slug:
+            return None
+        try:
+            game_details = get_game_details(self.game_slug)
+            return game_details.get("discord_id") or None
+        except Exception as ex:
+            logger.debug("Unable to fetch Discord ID for %s: %s", self.game_slug, ex)
+            return None
+
     @property
     def script_pretty(self):
         """Return a pretty print of the script"""
@@ -179,7 +193,17 @@ class LutrisInstaller:  # pylint: disable=too-many-instance-attributes
         for file in files:
             file.set_url(self.interpreter._substitute(file.url))
             if is_moddb_url(file.url):
-                file.set_url(ModDB().transform_url(file.url))
+                moddb_url = file.url
+                try:
+                    file.set_url(ModDB().transform_url(moddb_url))
+                except requests.RequestException as ex:
+                    logger.warning("Unable to resolve ModDB URL %s: %s", moddb_url, ex)
+                    file.set_url(
+                        "N/A:"
+                        + _("Download from {url} and select the file here").format(
+                            url=moddb_url,
+                        )
+                    )
 
         if installer_file_id and self.service:
             logger.info("Getting files for %s", installer_file_id)
@@ -327,6 +351,10 @@ class LutrisInstaller:  # pylint: disable=too-many-instance-attributes
 
         game_config = self.get_game_config()
         configpath = write_game_config(self.slug, game_config)
+        discord_id = self.discord_id
+        if not discord_id:
+            discord_id = self._get_discord_id_from_api()
+
         self.game_id = add_or_update(
             name=self.game_name,
             runner=self.runner,
@@ -341,6 +369,6 @@ class LutrisInstaller:  # pylint: disable=too-many-instance-attributes
             service=self.service.id if self.service else None,
             service_id=self.service_appid,
             id=self.game_id,
-            discord_id=self.discord_id,
+            discord_id=discord_id,
         )
         return self.game_id, game_config

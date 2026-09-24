@@ -34,6 +34,7 @@ Requires:       python3-evdev
 Requires:       python3-distro
 Requires:       python3-pillow
 Requires:       cabextract
+Requires:       glib-networking
 Requires:       mesa-vulkan-drivers
 Requires:       vulkan-loader
 Recommends:     wine-core
@@ -58,7 +59,7 @@ BuildRequires:  update-desktop-files
 BuildRequires:  hicolor-icon-theme
 Requires:       typelib-1_0-Gtk-3_0
 Requires:       typelib-1_0-GnomeDesktop-3_0
-Requires:       typelib-1_0-WebKit2-4_0
+Requires:       (typelib-1_0-WebKit2-4_0 or typelib-1_0-WebKit2-4_1)
 Requires:       typelib-1_0-Notify-0_7
 %endif
 

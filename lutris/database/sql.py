@@ -1,45 +1,83 @@
 import sqlite3
 import threading
+from collections.abc import Sequence
 from types import TracebackType
-from typing import Any, Dict, List, Sequence, Tuple, Type, TypeAlias, cast
+from typing import Any, TypeAlias, cast
 
-# Prevent multiple access to the database (SQLite limitation)
+# Prevent multiple access to the database (SQLite limitation). This must cover the entire
+# connection lifetime, not just individual statements: SQLite holds a transaction's locks
+# from its first statement all the way through the commit, so guarding only execute() would
+# leave the commit in db_cursor.__exit__ free to race with another connection and fail with
+# "database is locked".
 DB_LOCK = threading.RLock()
 
-DBResult: TypeAlias = Dict[str, Any]
-DBResults: TypeAlias = List[DBResult]
-DBCondition: TypeAlias = Tuple[str, Any]
-DBConditionsDict: TypeAlias = Dict[str, Any]
-DBUpdateDict: TypeAlias = Dict[str, Any]
+# How long to wait for DB_LOCK before concluding something is deadlocked. The lock is held
+# for a whole transaction, and a thread holding it can be delayed by an unrelated CPU-bound
+# thread hogging the GIL, so this is deliberately generous.
+DB_LOCK_TIMEOUT_SECONDS = 30
+
+DBResult: TypeAlias = dict[str, Any]
+DBResults: TypeAlias = list[DBResult]
+DBCondition: TypeAlias = tuple[str, Any]
+DBConditionsDict: TypeAlias = dict[str, Any]
+DBUpdateDict: TypeAlias = dict[str, Any]
 DBParams: TypeAlias = Sequence[Any]
 
 
 class db_cursor(object):
+    """Context manager providing a cursor for a single database transaction.
+
+    DB_LOCK is held for the whole block, from connecting through the commit, so that one
+    transaction's SQLite locks can never overlap another connection's.
+
+    Since that lock is global and guards every database access in the process, code inside the
+    block must not suspend. In particular, never yield from inside one of these blocks: the lock
+    would stay held until the generator is resumed or garbage collected, and if the caller
+    abandons the generator part way through, every other database access blocks until then.
+
+    For the same reason, keep the block short and do not let the cursor outlive it; the
+    connection is closed on exit.
+    """
+
     def __init__(self, db_path: str):
         self.db_path = db_path
         self.db_conn: sqlite3.Connection = None
 
     def __enter__(self) -> sqlite3.Cursor:
-        self.db_conn = sqlite3.connect(self.db_path)
-        cursor = self.db_conn.cursor()
-        return cursor
+        if not DB_LOCK.acquire(timeout=DB_LOCK_TIMEOUT_SECONDS):  # pylint: disable=consider-using-with
+            raise RuntimeError(f"Database is busy. Not opening {self.db_path}")
 
-    def __exit__(self, _type: Type[BaseException], value: BaseException, traceback: TracebackType) -> None:
-        self.db_conn.commit()
-        self.db_conn.close()
+        try:
+            self.db_conn = sqlite3.connect(self.db_path)
+            return self.db_conn.cursor()
+        except BaseException:
+            # __exit__ is not called when __enter__ raises, so the lock must be released here
+            # or it would be held forever.
+            DB_LOCK.release()
+            raise
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        try:
+            try:
+                if exc_type is None:
+                    self.db_conn.commit()
+                else:
+                    self.db_conn.rollback()
+            finally:
+                self.db_conn.close()
+        finally:
+            DB_LOCK.release()
 
 
-def cursor_execute(cursor: sqlite3.Cursor, query: str, params: DBParams = None) -> sqlite3.Cursor:
-    """Execute a SQL query, run it in a lock block"""
-    params = params or ()
-    lock = DB_LOCK.acquire(timeout=5)  # pylint: disable=consider-using-with
-    if not lock:
-        raise RuntimeError(f"Database is busy. Not executing {query}")
-
-    try:
-        return cursor.execute(query, params)
-    finally:
-        DB_LOCK.release()
+def cursor_execute(cursor: sqlite3.Cursor, query: str, params: DBParams | None = None) -> sqlite3.Cursor:
+    """Execute a SQL query. The cursor must come from db_cursor, which holds DB_LOCK for the
+    whole transaction and so serializes all database access."""
+    return cursor.execute(query, params or ())
 
 
 def db_insert(db_path: str, table: str, fields: DBUpdateDict) -> int:
@@ -77,7 +115,9 @@ def db_delete(db_path: str, table: str, field: str, value: Any) -> None:
         cursor_execute(cursor, "delete from {0} where {1}=?".format(table, field), (value,))
 
 
-def db_select(db_path: str, table: str, fields: Sequence[str] = None, condition: DBCondition = None) -> DBResults:
+def db_select(
+    db_path: str, table: str, fields: Sequence[str] | None = None, condition: DBCondition | None = None
+) -> DBResults:
     if fields:
         columns = ", ".join(fields)
     else:
@@ -125,7 +165,7 @@ def db_query(db_path: str, query: str, params: DBParams = ()) -> DBResults:
     return results
 
 
-def add_field(db_path: str, tablename: str, field: Dict[str, str]) -> None:
+def add_field(db_path: str, tablename: str, field: dict[str, str]) -> None:
     query = "ALTER TABLE %s ADD COLUMN %s %s" % (
         tablename,
         field["name"],
@@ -135,7 +175,7 @@ def add_field(db_path: str, tablename: str, field: Dict[str, str]) -> None:
         cursor.execute(query)
 
 
-def _create_filter(field: str, value: Any, params: List[Any], negate: bool = False) -> str:
+def _create_filter(field: str, value: Any, params: list[Any], negate: bool = False) -> str:
     """Creates a filter to match a field to a value, or to a list of
     values. None can be used as well, to make NULL."""
     also_null = False
@@ -181,16 +221,18 @@ def _create_filter(field: str, value: Any, params: List[Any], negate: bool = Fal
         else:
             return f"({field} IS NULL OR {sql})"
     else:
+        if negate:
+            return f"({field} IS NULL OR {sql})"
         return sql
 
 
 def filtered_query(
     db_path: str,
     table: str,
-    searches: Dict[str, str] = None,
-    filters: DBConditionsDict = None,
-    excludes: DBConditionsDict = None,
-    sorts: Sequence[str] = None,
+    searches: dict[str, str] | None = None,
+    filters: DBConditionsDict | None = None,
+    excludes: DBConditionsDict | None = None,
+    sorts: Sequence[str] | None = None,
 ) -> DBResults:
     searches = searches or {}
     filters = filters or {}

@@ -4,7 +4,6 @@
 import os
 import traceback
 from gettext import gettext as _
-from typing import List
 
 from gi.repository import Gdk, Gio, GLib, Gtk
 
@@ -266,6 +265,7 @@ class InstallerWindow(ModelessDialog, DialogInstallUIDelegate, ScriptInterpreter
 
             self.installer_files_box.stop_all()
             if self.interpreter:
+                self.load_spinner_page(_("Cancelling installation…"), cancellable=False)
                 self.interpreter.revert(
                     remove_game_dir=remove_checkbox.get_active(),
                     completion_function=on_cancelled,
@@ -444,7 +444,7 @@ class InstallerWindow(ModelessDialog, DialogInstallUIDelegate, ScriptInterpreter
         for script in installers:
             for item in ["description", "notes"]:
                 script[item] = script.get(item) or ""
-            for item in ["name", "runner", "version"]:
+            for item in ["name", "runner", "version", "script"]:
                 if item not in script:
                     raise ScriptingError(_('Missing field "%s" in install script') % item)
             for file_desc in script["script"].get("files", {}):
@@ -748,7 +748,9 @@ class InstallerWindow(ModelessDialog, DialogInstallUIDelegate, ScriptInterpreter
     # Provides a generic progress spinner and displays a status. The back button
     # is disabled for this page.
 
-    def load_spinner_page(self, status: str, cancellable: bool = True, extra_buttons: List[Gtk.Button] = None) -> None:
+    def load_spinner_page(
+        self, status: str, cancellable: bool = True, extra_buttons: list[Gtk.Button] | None = None
+    ) -> None:
         def present_spinner_page():
             """Show a spinner in the middle of the view"""
 
@@ -938,7 +940,7 @@ class InstallerWindow(ModelessDialog, DialogInstallUIDelegate, ScriptInterpreter
 
         is_expected = hasattr(error, "is_expected") and error.is_expected
 
-        if is_expected:
+        if not is_expected:
             formatted = traceback.format_exception(type(error), error, error.__traceback__)
             formatted = "\n".join(formatted).strip()
 
@@ -965,7 +967,10 @@ class InstallerWindow(ModelessDialog, DialogInstallUIDelegate, ScriptInterpreter
 
         error_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
 
-        label = Gtk.Label(xalign=0.0, wrap=True)
+        # The details box is no_show_all so that show_all() on the page can't reveal it,
+        # but that also skips everything inside it, so its contents are created visible.
+        # They stay hidden along with the box until it is made visible.
+        label = Gtk.Label(xalign=0.0, wrap=True, visible=True)
         label.set_markup(
             _(
                 "An unexpected error has occurred while installing this game. "
@@ -976,11 +981,11 @@ class InstallerWindow(ModelessDialog, DialogInstallUIDelegate, ScriptInterpreter
         )
         self.error_details_box.pack_start(label, False, False, 0)
 
-        frame = Gtk.Frame(shadow_type=Gtk.ShadowType.ETCHED_IN)
+        frame = Gtk.Frame(shadow_type=Gtk.ShadowType.ETCHED_IN, visible=True)
 
-        details_textview = Gtk.TextView(editable=False, buffer=self.error_details_buffer)
+        details_textview = Gtk.TextView(editable=False, buffer=self.error_details_buffer, visible=True)
 
-        scrolledwindow = Gtk.ScrolledWindow()
+        scrolledwindow = Gtk.ScrolledWindow(visible=True)
         scrolledwindow.add(details_textview)
         frame.add(scrolledwindow)
         self.error_details_box.pack_start(frame, True, True, 0)

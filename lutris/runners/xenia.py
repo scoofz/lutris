@@ -5,21 +5,21 @@ from gettext import gettext as _
 
 from lutris import settings
 from lutris.exceptions import MissingExecutableError, MissingGameExecutableError
+from lutris.runners.runner import Runner
 from lutris.runners.wine import wine
 from lutris.util import system
 from lutris.util.wine.wine import get_default_wine_version
 
 
 class xenia(wine):
+    runner_name = "xenia"
     human_name = _("Xenia")
     description = _("Xbox 360 Emulator")
-    platforms = [_("Microsoft Xbox 360")]
+    platform_dict = Runner.to_platform_dict([_("Microsoft Xbox 360")])
     runnable_alone = True
     multiple_versions = False
-    runner_executable = "xenia/xenia_canary.exe"
-    download_url = (
-        "https://github.com/xenia-canary/xenia-canary-releases/releases/latest/download/xenia_canary_windows.zip"
-    )
+    runner_executable = "xenia_canary.exe"
+    download_url = "https://github.com/xenia-canary/xenia-canary/releases/latest/download/xenia_canary_windows.7z"
     entry_point_option = "main_file"
 
     game_options = [
@@ -59,7 +59,7 @@ class xenia(wine):
     @property
     def game_exe(self):
         """Return path to the managed Xenia Windows binary."""
-        return os.path.join(settings.RUNNER_DIR, self.runner_executable)
+        return os.path.join(settings.RUNNER_DIR, self.runner_executable_path)
 
     @property
     def prefix_path(self):
@@ -89,16 +89,22 @@ class xenia(wine):
         """Check if the Xenia binary is installed."""
         return os.path.isfile(self.game_exe)
 
-    def play(self):
-        """Launch an Xbox 360 game through Xenia under Wine."""
-        launch_info = {"env": self.get_env(os_env=False)}
+    def get_command(self):
+        """Return the command that launches Xenia itself.
 
+        The Windows Xenia binary is appended to the Wine/umu launcher here so
+        that both play() and running the runner standalone launch the emulator;
+        for a umu/Proton wine version the bare launcher would otherwise have no
+        executable to run. play() only needs to add the game path on top.
+        """
         xenia_exe = self.game_exe
         if not system.path_exists(xenia_exe):
             raise MissingExecutableError(_("Xenia executable not found at '%s'") % xenia_exe)
+        return super().get_command() + [xenia_exe]
 
+    def play(self):
+        """Launch an Xbox 360 game through Xenia under Wine."""
         command = self.get_command()
-        command.append(xenia_exe)
 
         if self.runner_config.get("fullscreen"):
             command.append("--fullscreen")
@@ -108,5 +114,4 @@ class xenia(wine):
             raise MissingGameExecutableError(filename=game_path)
         command.append(game_path)
 
-        launch_info["command"] = command
-        return launch_info
+        return {"command": command, "env": self.get_env(os_env=False)}
