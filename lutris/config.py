@@ -53,6 +53,28 @@ def rename_config(old_config_id: str, new_slug: str) -> str | None:
     return new_config_id
 
 
+# Game options that locate the shared installation; always kept even if the runner can't be loaded.
+BASE_SHARED_GAME_OPTIONS = {"exe", "main_file", "prefix", "working_dir"}
+
+
+def get_shared_game_options(runner_slug: str | None) -> set[str]:
+    """Return the game options that describe where the game is installed (file
+    and directory options). These must live in the shared game config, never in a
+    profile override, or other profiles would lose track of the installation."""
+    shared = set(BASE_SHARED_GAME_OPTIONS)
+    if not runner_slug:
+        return shared
+    try:
+        runner = import_runner(runner_slug)
+    except InvalidRunnerError:
+        return shared
+    game_options = getattr(runner, "game_options", None) or []
+    for option in game_options:
+        if option.get("type") in ("file", "directory"):
+            shared.add(option["option"])
+    return shared
+
+
 class LutrisConfig:
     """Class where all the configuration handling happens.
 
@@ -184,10 +206,22 @@ class LutrisConfig:
             self.runner_level.update(read_yaml_from_file(self.runner_config_path))
         self.system_level.update(read_yaml_from_file(self.system_config_path))
 
+        # Keep a copy of the shared game section so save() can tell profile overrides apart
+        self.shared_game_level: dict[str, Any] = dict(self.game_level.get("game") or {})
+
         # Overlay profile-level overrides on top of the shared game config
         if self.profile_config_path:
             profile_data = read_yaml_from_file(self.profile_config_path)
+            shared_options = get_shared_game_options(self.runner_slug)
             for section, values in profile_data.items():
+                if section == "game" and isinstance(values, dict):
+                    # Installation paths come from the shared config; a profile copy is
+                    # only used when the shared config lost it (see migrate_profile_game_configs)
+                    values = {
+                        key: value
+                        for key, value in values.items()
+                        if key not in shared_options or not self.shared_game_level.get(key)
+                    }
                 if isinstance(values, dict) and isinstance(self.game_level.get(section), dict):
                     self.game_level[section].update(values)
                 elif values:
@@ -272,24 +306,16 @@ class LutrisConfig:
     def save(self) -> None:
         """Save configuration file according to its type.
 
-        When a profile_id is set and the level is "game", game-section keys are
-        written to the profile-specific override file instead of the shared game
-        config, keeping the shared config intact for other profiles.
+        When a profile_id is set and the level is "game", options that differ for
+        this profile go to its override file; see _save_with_profile().
         """
 
         if self.options_supported is not None:
             raise RuntimeError("LutrisConfig instances that are restricted to only some options can't be saved.")
 
-        if self.profile_id and self.level == "game" and self.profile_config_path:
-            # Split: shared game config gets non-game sections; profile file gets the "game" section
-            shared_config = {k: v for k, v in self.game_level.items() if k != "game" and v}
-            profile_config = {}
-            if self.game_level.get("game"):
-                profile_config["game"] = self.game_level["game"]
-            if self.game_config_path:
-                write_yaml_to_file(shared_config, self.game_config_path)
-            os.makedirs(os.path.dirname(self.profile_config_path), exist_ok=True)
-            write_yaml_to_file(profile_config, self.profile_config_path)
+        profile_config_path = self.profile_config_path
+        if self.level == "game" and profile_config_path:
+            self._save_with_profile(profile_config_path)
             self.initialize_config()
             return
 
@@ -309,6 +335,41 @@ class LutrisConfig:
         logger.debug("Saving %s config to %s", self, config_path)
         write_yaml_to_file(config, config_path)
         self.initialize_config()
+
+    def _save_with_profile(self, profile_config_path: str) -> None:
+        """Save a game config while a profile is active.
+
+        The shared game config stays the source of truth: installation paths (exe,
+        prefix, ...) and any value identical to the shared one are written there, so
+        the game remains installed once for every profile. Only the game options
+        whose value differs for this profile go to the profile override file.
+        """
+        shared_options = get_shared_game_options(self.runner_slug)
+        game_section = self.game_level.get("game") or {}
+        shared_game = dict(self.shared_game_level)
+        profile_game = {}
+        for key in shared_options:
+            if key not in game_section:
+                shared_game.pop(key, None)
+        for key, value in game_section.items():
+            if key in shared_options:
+                shared_game[key] = value
+            elif shared_game.get(key) != value:
+                profile_game[key] = value
+
+        shared_config = {key: value for key, value in self.game_level.items() if key != "game"}
+        shared_config["game"] = {key: value for key, value in shared_game.items() if value}
+        shared_config = {key: value for key, value in shared_config.items() if value}
+        if self.game_config_path:
+            logger.debug("Saving %s shared config to %s", self, self.game_config_path)
+            write_yaml_to_file(shared_config, self.game_config_path)
+
+        if profile_game:
+            logger.debug("Saving %s profile overrides to %s", self, profile_config_path)
+            os.makedirs(os.path.dirname(profile_config_path), exist_ok=True)
+            write_yaml_to_file({"game": profile_game}, profile_config_path)
+        elif os.path.exists(profile_config_path):
+            os.remove(profile_config_path)
 
     def get_defaults(self, options_type: str) -> dict[str, Any]:
         """Return a dict of options' default value."""
