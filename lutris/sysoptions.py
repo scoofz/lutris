@@ -158,6 +158,20 @@ system_options: list[dict[str, Any]] = [  # pylint: disable=invalid-name
         "help": _("Automatically synchronize cloud saves for services that support it (currently GOG)."),
     },
     {
+        "section": _("Lutris"),
+        "option": "profile_save_dirs",
+        "type": "string",
+        "label": _("Save folders to separate per profile"),
+        "scope": ["game"],
+        "advanced": True,
+        "help": _(
+            "Folders or files where this game keeps its saves outside of the Windows user folder, "
+            "separated by ';'. Each Lutris profile gets its own copy of them.\n"
+            "Use $GAMEDIR for the game folder, $PREFIX for the Wine prefix and ~ for your home; "
+            "relative paths are relative to the game folder. Example: $GAMEDIR/saves"
+        ),
+    },
+    {
         "section": _("Display"),
         "option": "gpu",
         "type": "choice",

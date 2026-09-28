@@ -837,6 +837,17 @@ class Game:
         self.start_game()
         return True
 
+    def prelaunch(self) -> None:
+        """Run on a worker thread before the game is configured and started."""
+        self.runner.prelaunch()
+        try:
+            from lutris.profile import get_profile_manager
+            from lutris.util.profile_save_dirs import link_game_save_dirs
+
+            link_game_save_dirs(self, get_profile_manager().current_profile_id)
+        except Exception as ex:
+            logger.exception("Failed to separate the save folders of %s per profile: %s", self, ex)
+
     @watch_game_errors(game_stop_result=False)
     def launch(self, launch_ui_delegate: "LaunchUIDelegate") -> bool:
         """Request launching a game. The game may not be installed yet."""
@@ -870,7 +881,7 @@ class Game:
                     raise error
                 self.configure_game(launch_ui_delegate)
 
-            jobs.AsyncCall(self.runner.prelaunch, configure_game)
+            jobs.AsyncCall(self.prelaunch, configure_game)
 
         launch_ui_delegate.wait_for_component_updates(self, proceed)
         return True

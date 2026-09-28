@@ -82,7 +82,7 @@ class TestIsolateUserFolder(unittest.TestCase):
         self.assertFalse(os.path.islink(os.path.join(private_prefix, "drive_c", "users", "alice_unix")))
 
     def test_failed_copy_restores_the_prefix(self):
-        with patch.object(profile_users.shutil, "copytree", side_effect=OSError("No space left on device")):
+        with patch("lutris.util.profile_links.shutil.copytree", side_effect=OSError("No space left on device")):
             with self.assertRaises(OSError):
                 self.isolate("alice")
         self.assertFalse(os.path.islink(self.user_path))
