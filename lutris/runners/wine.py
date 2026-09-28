@@ -326,6 +326,18 @@ class wine(Runner):
                 "keeping them in the game's prefix. This includes some saved games."
             ),
         },
+        {
+            "option": "profile_user_folder",
+            "type": "bool",
+            "label": _("Separate user folder per profile"),
+            "default": True,
+            "advanced": True,
+            "help": _(
+                "Give each Lutris profile its own Windows user folder (Documents, Saved Games, "
+                "AppData) in this prefix, so that each profile has its own saves while the game "
+                "stays installed once."
+            ),
+        },
     ]
 
     runner_options = [
@@ -1185,6 +1197,7 @@ class wine(Runner):
                 logger.warning("No valid prefix detected in %s, creating one...", prefix_path)
                 create_prefix(prefix_path, wine_path=self.get_executable(), arch=self.wine_arch, runner=self)
 
+            self.isolate_profile_user_folder(prefix_path)
             prefix_manager = WinePrefixManager(prefix_path)
             prefix_manager.cleanup_broken_symlinks()
             if self.runner_config.get("autoconf_joypad", False):
@@ -1438,6 +1451,21 @@ class wine(Runner):
         # unknown reason.
         pids = pids | system.get_pids_using_file(os.path.join(os.path.dirname(exe), "wineserver"))
         return pids
+
+    def isolate_profile_user_folder(self, prefix_path):
+        """Give the active profile its own Windows user folder (and so its own saves)
+        in the shared prefix; see lutris.util.wine.profile_users."""
+        if not self.game_config.get("profile_user_folder", True):
+            return
+        from lutris.profile import get_profile_manager
+        from lutris.util.wine.profile_users import isolate_user_folder
+
+        try:
+            isolate_user_folder(prefix_path, get_profile_manager().current_profile_id)
+        except Exception as ex:
+            logger.exception("Failed to isolate the Windows user folder of the profile: %s", ex)
+        if self.game_config.get("desktop_integration", False):
+            logger.warning("Desktop integration is on: Documents and similar folders are shared by all profiles")
 
     def configure_desktop_integration(self, wine_prefix):
         try:
